@@ -1,0 +1,220 @@
+---
+title: "EDA"
+author: "Chang Fang Yu"
+date-modified: "last-modified"
+execute:
+  echo: True
+  eval: True
+  warning: false
+  freeze: true
+---
+```{r}
+library(readr)
+```
+
+```{r}
+pacman::p_load(ggrepel, patchwork, 
+               ggthemes, hrbrthemes,
+               tidyverse, plotly, 
+               DT, GGally, parallelPlot, tidytext) 
+pacman::p_load(igraph, tidygraph, ggraph, 
+               visNetwork, lubridate, clock,
+               tidyverse, graphlayouts)
+```
+
+
+Import data:
+```{r}
+GP <- read_csv("data/GovernmentProcurementviaGeBIZ.csv")
+```
+```{R}
+glimpse(GP)
+```
+```{r}
+str(GP)
+```
+```{R}
+sum(is.na(GP))
+```
+```{R}
+summary(GP)
+
+```
+```{r}
+colnames(GP)
+
+```
+
+Data Cleaning
+```{R}
+# drop NA
+GP_cleaned <- GP %>% drop_na()
+
+# Numeric type accuracy
+GP_cleaned <- GP_cleaned %>%
+  mutate(across(where(is.character), as.factor))  
+
+GP_cleaned <- GP_cleaned %>%
+  mutate(across(contains("Value"), as.numeric, .names = "numeric_{.col}"))
+```
+
+```{R}
+GP_summary <- GP %>%
+  group_by(agency) %>%
+  summarise(Total_Value = sum(awarded_amt, na.rm = TRUE)) %>%
+  arrange(desc(Total_Value))
+
+ggplot(GP_summary, aes(x = reorder(agency, Total_Value), y = Total_Value)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  labs(title = "Government Procurement via GeBIZ",
+       x = "Agency",
+       y = "Total Value") +
+  theme_minimal()
+
+```
+Top 10 suppliers
+```{r}
+library(ggplot2)
+library(dplyr)
+library(lubridate)  # 解析年份
+
+GP %>%
+  mutate(year = year(award_date)) %>%  # 解析 award_date 為年份
+  group_by(supplier_name, year) %>%
+  summarise(Total_Amount = sum(awarded_amt, na.rm = TRUE), .groups = "drop") %>%
+  arrange(desc(Total_Amount)) %>%
+  slice_head(n = 20) %>%  # 取前 20 大 Supplier
+  ggplot(aes(x = reorder(supplier_name, Total_Amount), 
+             y = Total_Amount, 
+             fill = factor(year))) +  # 以年份區分顏色
+  geom_col() +
+  coord_flip() +  # 讓圖表水平顯示
+  labs(title = "Top 20 Suppliers by Awarded Amount (Yearly Breakdown)",
+       x = "Supplier Name",
+       y = "Total Awarded Amount",
+       fill = "Year") +  # 圖例標籤
+  scale_fill_brewer(palette = "Set2") +  # 改變配色
+  theme_minimal()
+
+
+
+```
+```{r}
+
+library(tidytext)
+library(wordcloud)
+
+# Tokenization and word frequency calculation
+word_freq <- GP %>%
+  unnest_tokens(word, tender_description) %>%
+  count(word, sort = TRUE) %>%
+  filter(!word %in% stop_words$word) # Remove stopwords
+
+# Generate a word cloud
+wordcloud(words = word_freq$word, freq = word_freq$n, max.words = 100, colors = brewer.pal(8, "Dark2"))
+
+```
+```{r}
+# Calculate total procurement amount per supplier
+supplier_market_share <- GP %>%
+  group_by(supplier_name) %>%
+  summarise(Total_Awarded_Amt = sum(awarded_amt, na.rm = TRUE)) %>%
+  arrange(desc(Total_Awarded_Amt))
+
+```
+
+```{r}
+
+library(scales)  # Ensure this package is loaded
+
+supplier_market_share %>%
+  head(10) %>%
+  ggplot(aes(x = reorder(supplier_name, Total_Awarded_Amt), y = Total_Awarded_Amt)) +
+  geom_col(fill = "darkblue") +
+  coord_flip() +
+  scale_y_continuous(labels = dollar_format(prefix = "S$")) +  # Fixing dollar_format
+  labs(title = "Top 10 Suppliers by Procurement Amount",
+       x = "Supplier",
+       y = "Total Awarded Amount (S$)") +
+  theme_minimal()
+
+
+```
+```{r}
+library(ggplot2)
+
+# Select top 10 suppliers and group others as "Others"
+top_suppliers <- supplier_market_share %>%
+  head(10)
+
+other_suppliers <- tibble(
+  supplier_name = "Others",
+  Total_Awarded_Amt = sum(supplier_market_share$Total_Awarded_Amt) - sum(top_suppliers$Total_Awarded_Amt)
+)
+
+# Combine top suppliers and others
+supplier_pie_data <- bind_rows(top_suppliers, other_suppliers)
+
+# Plot pie chart
+ggplot(supplier_pie_data, aes(x = "", y = Total_Awarded_Amt, fill = supplier_name)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar("y", start = 0) +
+  scale_fill_manual(values = rainbow(11)) +  # Assign different colors
+  theme_void() +
+  labs(title = "Market Share of Top 10 Suppliers in Government Procurement")
+
+```
+```{r}
+# Ensure supplier_market_share is sorted and compute cumulative sum
+supplier_market_share <- supplier_market_share %>%
+  arrange(desc(Total_Awarded_Amt)) %>%   # Sort in descending order
+  mutate(Cumulative_Share = cumsum(Total_Awarded_Amt) / sum(Total_Awarded_Amt)) %>%  
+  mutate(Supplier_Rank = row_number())  # Precompute row numbers
+
+# Create a Cumulative Market Share Plot
+ggplot(supplier_market_share, aes(x = Supplier_Rank, y = Cumulative_Share)) +
+  geom_line(color = "red", linewidth = 1) +   # Line for cumulative trend
+  geom_point(color = "blue") +                # Points for emphasis
+  scale_y_continuous(labels = percent_format()) +  # Convert Y-axis to percentage
+  labs(title = "Cumulative Market Share of Suppliers",
+       x = "Number of Suppliers",
+       y = "Cumulative Market Share (%)") +
+  theme_minimal()
+
+
+
+```
+
+
+
+Distribution of Awarded Amount (Boxplot)
+```{r}
+GP %>%
+  ggplot(aes(y = awarded_amt)) +
+  geom_boxplot(fill = "lightgreen", outlier.color = "red") +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Distribution of Awarded Amounts",
+       y = "Awarded Amount (S$)") +
+  theme_minimal()
+
+```
+Total Procurement Amount by Government Agencies
+```{r}
+GP %>%
+  group_by(agency) %>%
+  summarise(Total_Awarded_Amt = sum(awarded_amt, na.rm = TRUE)) %>%
+  arrange(desc(Total_Awarded_Amt)) %>%
+  head(10) %>%
+  ggplot(aes(x = reorder(agency, Total_Awarded_Amt), y = Total_Awarded_Amt)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Government Procurement Total Amount by Agency",
+       x = "Agency",
+       y = "Total Awarded Amount (S$)") +
+  theme_minimal()
+
+```
+
+
+
